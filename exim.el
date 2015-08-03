@@ -83,16 +83,18 @@
   (when exim-debug-on
     `(message (concat "[EXIM] " ,format-string) ,@args)))
 
-;; FIXME: other locales?
+;; Locales from glibc
 (defconst exim--locales
   "@locale=\
-aa,af,am,an,ar,as,ast,az,be,bem,ber,bg,bho,bn,bo,br,brx,bs,byn,C,ca,crh,cs,\
-csb,cv,cy,da,de,dv,dz,el,en,es,et,eu,fa,ff,fi,fil,fo,fr,fur,fy,ga,gd,gez,gl,\
-gu,gv,ha,he,hi,hne,hr,hsb,ht,hu,hy,id,ig,ik,is,it,iu,iw,ja,ka,kk,kl,km,kn,ko,\
-kok,ks,ku,kw,ky,lb,lg,li,lij,lo,lt,lv,mag,mai,mg,mhr,mi,mk,ml,mn,mr,ms,mt,my,\
-nan,nb,nds,ne,nl,nn,no,nr,nso,oc,om,or,os,pa,pap,pl,ps,pt,ro,ru,rw,sa,sc,sd,\
-se,shs,si,sid,sk,sl,so,sq,sr,ss,st,sv,sw,ta,te,tg,th,ti,tig,tk,tl,tn,tr,ts,tt,\
-ug,uk,unm,ur,uz,ve,vi,wa,wae,wal,wo,xh,yi,yo,yue,zh,zu")
+aa,af,ak,am,an,anp,ar,as,ast,ayc,az,be,bem,ber,bg,bhb,bho,bn,bo,br,brx,bs,byn,\
+ca,ce,cmn,crh,cs,csb,cv,cy,da,de,doi,dv,dz,el,en,es,et,eu,fa,ff,fi,fil,fo,fr,\
+fur,fy,ga,gd,gez,gl,gu,gv,ha,hak,he,hi,hne,hr,hsb,ht,hu,hy,ia,id,ig,ik,is,it,\
+iu,iw,ja,ka,kk,kl,km,kn,ko,kok,ks,ku,kw,ky,lb,lg,li,li,lij,lo,lt,lv,lzh,mag,\
+mai,mg,mhr,mi,mk,ml,mn,mni,mr,ms,mt,my,nan,nb,nds,ne,nhn,niu,nl,nn,nr,nso,oc,\
+om,or,os,pa,pa,pap,pl,ps,pt,quz,raj,ro,ru,rw,sa,sat,sc,sd,se,shs,si,sid,sk,sl,\
+so,sq,sr,ss,st,sv,sw,szl,ta,tcy,te,tg,th,the,ti,tig,tk,tl,tn,tr,ts,tt,ug,uk,\
+unm,ur,uz,ve,vi,wa,wae,wal,wo,xh,yi,yo,yue,zh,zu,\
+C,no")
 
 (defvar exim--internal
   '(connection nil root nil window nil im-id 0 ic-id 0 property-index 0
@@ -465,7 +467,7 @@ ug,uk,unm,ur,uz,ve,vi,wa,wae,wal,wo,xh,yi,yo,yue,zh,zu")
                  (obj (make-instance 'xim:forward-event))
                  key-event event)
              (xcb:unmarshal obj data)
-             ;; We do no checks the flag slot
+             ;; We do not check the flag slot
              ;; Convert X key event to Emacs key event
              (let ((xcb:lsb xim:lsb))   ;in client's byte-order
                (setq key-event (make-instance 'xcb:KeyPress)))
@@ -477,7 +479,7 @@ ug,uk,unm,ur,uz,ve,vi,wa,wae,wal,wo,xh,yi,yo,yue,zh,zu")
                      event (when event
                              (xcb:keysyms:keysym->event event state))))
              (if (plist-get exim--internal 'event-pending)
-                 ;; All event should be forwarded to Emacs frame
+                 ;; All events should be forwarded to Emacs frame
                  (when event
                    (push event unread-command-events))
                (plist-put exim--internal 'event-pending t)
