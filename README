@@ -2,12 +2,10 @@ Emacs X Input Method
 ====================
 
 EXIM (Emacs X Input Method) is an X input method server utilizing Emacs as its
-backend. Please check the wiki for more details.
-  + Wiki: https://github.com/ch11ng/exim/wiki
+backend. Please check the wiki (https://github.com/ch11ng/exim/wiki) for more
+details.
 
-EXIM is mainly designed for working with EXWM window manger:
-  + EXWM: https://github.com/ch11ng/exwm
+EXIM is mainly designed for working with EXWM window manger
+(https://github.com/ch11ng/exwm).
 
-EXIM is built on top of XELB and its utility libraris:
-  + XELB: https://github.com/ch11ng/xelb
-  + XELB utilility libraries: https://github.com/ch11ng/xelb-util
+EXIM is built on top of XELB (https://github.com/ch11ng/xelb).
