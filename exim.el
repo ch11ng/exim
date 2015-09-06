@@ -334,7 +334,7 @@ C,no")
              (setq index (cl-position "COMPOUND_TEXT"
                                       (mapcar (lambda (i) (slot-value i 'name))
                                               (slot-value obj 'names))
-                                      :test 'equal))
+                                      :test #'equal))
              (unless index
                ;; Fallback to portable character encoding (a subset of ASCII)
                (setq index -1))
@@ -438,8 +438,8 @@ C,no")
                                   :length 4
                                   :value (funcall
                                           (if xim:lsb
-                                              'xcb:-pack-u4-lsb
-                                            'xcb:-pack-u4)
+                                              #'xcb:-pack-u4-lsb
+                                            #'xcb:-pack-u4)
                                           (logior xlib:XIMPreeditNothing
                                                   xlib:XIMStatusNothing)))
                    (make-instance 'xim:XICATTRIBUTE
@@ -488,7 +488,7 @@ C,no")
                    (push event unread-command-events))
                (plist-put exim--internal 'event-pending t)
                (if (or (not im-func)      ;no active input method
-                       (eq im-func 'list) ;the default method
+                       (eq im-func #'list) ;the default method
                        (not event)        ;invalid key
                        ;; Select only printable keys
                        (not (integerp event)) (> #x20 event) (< #x7e event))
@@ -609,7 +609,7 @@ C,no")
 (defun exim-start ()
   "Start EXIM."
   (unless (plist-get exim--internal 'connection)
-    (add-hook 'kill-emacs-hook 'exim-stop)
+    (add-hook 'kill-emacs-hook #'exim-stop)
     (let* ((connection (xcb:connect-to-socket))
            (root (slot-value
                   (elt (slot-value (xcb:get-setup connection) 'roots) 0)
@@ -668,9 +668,9 @@ C,no")
       ;; Initialize xcb:keysyms
       (xcb:keysyms:init connection)
       ;; Listen to SelectionRequest event for connection establishment
-      (xcb:+event connection 'xcb:SelectionRequest 'exim--on-SelectionRequest)
+      (xcb:+event connection 'xcb:SelectionRequest #'exim--on-SelectionRequest)
       ;; Listen to ClientMessage event on IMS window for new XIM connection.
-      (xcb:+event connection 'xcb:ClientMessage 'exim--on-ClientMessage-0)
+      (xcb:+event connection 'xcb:ClientMessage #'exim--on-ClientMessage-0)
       ;; Create an event window
       (xcb:+request connection
           (make-instance 'xcb:CreateWindow
@@ -691,14 +691,14 @@ C,no")
                          :property XIM_SERVERS :type xcb:Atom:ATOM :format 32
                          :data-len 1
                          :data (funcall
-                                (if xcb:lsb 'xcb:-pack-u4-lsb 'xcb:-pack-u4)
+                                (if xcb:lsb #'xcb:-pack-u4-lsb #'xcb:-pack-u4)
                                 server)))
       (xcb:flush connection))))
 
 (defun exim-stop ()
   "Stop EXIM."
   ;; Destroy IMS communication windows and close connections
-  (dolist (i (cl-loop for (key val) on exim--internal by 'cddr
+  (dolist (i (cl-loop for (key val) on exim--internal by #'cddr
                       when (integerp key) collect val))
     (let ((connection (elt i 0))
           (window (elt i 1)))
