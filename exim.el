@@ -3,7 +3,11 @@
 ;; Copyright (C) 2015 Chris Feng
 
 ;; Author: Chris Feng <chris.w.feng@gmail.com>
+;; Maintainer: Chris Feng <chris.w.feng@gmail.com>
+;; Version: 0
+;; Package-Requires: ((xelb "0.1"))
 ;; Keywords: unix, i18n
+;; URL: https://github.com/ch11ng/exim
 
 ;; This file is not part of GNU Emacs.
 
@@ -62,7 +66,7 @@
 ;;
 
 ;; Todo:
-;; + exploit input-method-[de]activate-hook to reduce unnecessary traffic.
+;; + Exploit input-method-[de]activate-hook to reduce unnecessary traffic.
 ;; + Are strings NULL-terminated? (UIM)
 ;; + Some requests should be handled synchronously.
 
@@ -76,7 +80,8 @@
 (require 'xcb-xim)
 (require 'xcb-keysyms)
 
-(defvar exim-debug-on nil "Non-nil to turn on debug for EXIM.")
+(eval-and-compile
+  (defvar exim-debug-on nil "Non-nil to turn on debug for EXIM."))
 
 (defmacro exim--log (format-string &rest args)
   "Print debug message."
@@ -102,7 +107,7 @@ C,no")
                event-pending nil)
   "Plist stores the internal status of EXIM.")
 
-(defun exim--on-SelectionRequest (data synthetic)
+(defun exim--on-SelectionRequest (data _synthetic)
   "Handle SelectionRequest event on IMS window."
   (let ((obj (make-instance 'xcb:SelectionRequest))
         (connection (plist-get exim--internal 'connection))
@@ -140,12 +145,11 @@ C,no")
                                    connection)))
         (xcb:flush connection)))))
 
-(defun exim--on-ClientMessage-0 (data synthetic)
+(defun exim--on-ClientMessage-0 (data _synthetic)
   "Handle ClientMessage event on IMS window (new connection)."
   (let ((obj (make-instance 'xcb:ClientMessage))
         (connection (plist-get exim--internal 'connection))
         (root (plist-get exim--internal 'root))
-        (ims-window (plist-get exim--internal 'window))
         data32 client-window new-connection server-window)
     (xcb:unmarshal obj data)
     (cl-assert (= (slot-value obj 'type)
@@ -184,7 +188,7 @@ C,no")
                        :event (xcb:marshal obj connection)))
     (xcb:flush connection)))
 
-(defun exim--on-ClientMessage (data synthetic)
+(defun exim--on-ClientMessage (data _synthetic)
   "Handle ClientMessage event on IMS communication window (request)."
   (let ((obj (make-instance 'xcb:ClientMessage))
         server-window client-window connection)
@@ -551,7 +555,7 @@ C,no")
                                       :length 0 :type 0 :detail nil)
                        connection client-window server-window)))))
 
-(defun exim--send (request connection client-window server-window)
+(defun exim--send (request connection client-window _server-window)
   "Send an XIM request REQUEST via connection CONNECTION."
   (let ((data (xcb:marshal request))
         event property)
