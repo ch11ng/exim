@@ -305,7 +305,7 @@ C,no")
              (exim--send
               (make-instance 'xim:set-event-mask
                              :im-id im-id
-                             :ic-id 0 ;all
+                             :ic-id 0   ;all
                              :forward-event-mask xcb:EventMask:KeyPress
                              :synchronous-event-mask xcb:EventMask:NoEvent)
               connection client-window server-window)))
@@ -487,33 +487,38 @@ C,no")
                  (when event
                    (push event unread-command-events))
                (plist-put exim--internal 'event-pending t)
-               (if (or (not im-func)      ;no active input method
+               (if (or (not im-func)       ;no active input method
                        (eq im-func #'list) ;the default method
-                       (not event)        ;invalid key
+                       (not event)         ;invalid key
                        ;; Select only printable keys
                        (not (integerp event)) (> #x20 event) (< #x7e event))
                    (with-slots (im-id ic-id serial-number event) obj
-                     (exim--send (make-instance 'xim:forward-event
-                                                :im-id im-id
-                                                :ic-id ic-id
-                                                :flag xim:commit-flag:synchronous
-                                                :serial-number serial-number
-                                                :event event)
-                                 connection client-window server-window))
-                 (with-temp-buffer ;in case buffer is read-only (e.g. EXWM mode)
+                     (exim--send
+                      (make-instance 'xim:forward-event
+                                     :im-id im-id
+                                     :ic-id ic-id
+                                     :flag xim:commit-flag:synchronous
+                                     :serial-number serial-number
+                                     :event event)
+                      connection client-window server-window))
+                 (with-temp-buffer      ;in case buffer is read-only
                    (let* ((input-method-use-echo-area t) ;show key strokes
                           (result (encode-coding-string
                                    (concat (funcall im-func event))
-                                   ;; Also works for portable character encoding
+                                   ;; Compound text also works for portable
+                                   ;; character encoding
                                    'compound-text-with-extensions)))
-                     (exim--send (make-instance 'xim:commit-x-lookup-chars
-                                                :im-id (slot-value obj 'im-id)
-                                                :ic-id (slot-value obj 'ic-id)
-                                                :flag (logior xim:commit-flag:synchronous
-                                                              xim:commit-flag:x-lookup-chars)
-                                                :length (length result)
-                                                :string result)
-                                 connection client-window server-window))))
+                     (message "")       ;force clear echo area
+                     (exim--send
+                      (make-instance 'xim:commit-x-lookup-chars
+                                     :im-id (slot-value obj 'im-id)
+                                     :ic-id (slot-value obj 'ic-id)
+                                     :flag
+                                     (logior xim:commit-flag:synchronous
+                                             xim:commit-flag:x-lookup-chars)
+                                     :length (length result)
+                                     :string result)
+                      connection client-window server-window))))
                (plist-put exim--internal 'event-pending nil))))
           ((= opcode xim:opcode:sync)
            (exim--log "SYNC")
