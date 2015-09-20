@@ -215,7 +215,8 @@ C,no")
                                       :long-offset 0
                                       :long-length (elt data 0)))
                    'value))
-       (exim--on-request data connection client-window server-window))
+       (when (< 0 (length data))        ;can be empty
+         (exim--on-request data connection client-window server-window)))
       (_ (cl-assert nil)))))
 
 (defun exim--on-request (data connection client-window server-window)
