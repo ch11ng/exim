@@ -152,41 +152,44 @@ C,no")
         (root (plist-get exim--internal 'root))
         data32 client-window new-connection server-window)
     (xcb:unmarshal obj data)
-    (cl-assert (= (slot-value obj 'type)
-                  (plist-get exim--internal '_XIM_XCONNECT)))
-    ;; Create new X connection
-    (setq data32 (slot-value (slot-value obj 'data) 'data32)
-          client-window (elt data32 0)
-          new-connection (xcb:connect-to-socket)
-          server-window (xcb:generate-id new-connection))
-    (set-process-query-on-exit-flag (slot-value new-connection 'process) nil)
-    ;; Store this client
-    (plist-put exim--internal server-window
-               (vector new-connection client-window nil))
-    ;; Listen for ClientMessage event on the new connection
-    (xcb:+event new-connection 'xcb:ClientMessage 'exim--on-ClientMessage)
-    ;; Create a communication window
-    (xcb:+request new-connection
-        (make-instance 'xcb:CreateWindow
-                       :depth 0 :wid server-window :parent root
-                       :x 0 :y 0 :width 1 :height 1 :border-width 0
-                       :class xcb:WindowClass:InputOutput :visual 0
-                       :value-mask xcb:CW:OverrideRedirect
-                       :override-redirect 1))
-    (xcb:flush new-connection)
-    ;; Send connection establishment ClientMessage
-    (setf (slot-value obj 'window) client-window
-          (slot-value (slot-value obj 'data) 'data32) (list server-window
-                                                            0 0 0 0))
-    (slot-makeunbound (slot-value obj 'data) 'data8)
-    (slot-makeunbound (slot-value obj 'data) 'data16)
-    (xcb:+request connection
-        (make-instance 'xcb:SendEvent
-                       :propagate 0
-                       :destination client-window
-                       :event-mask xcb:EventMask:NoEvent
-                       :event (xcb:marshal obj connection)))
-    (xcb:flush connection)))
+    (if (/= (slot-value obj 'type)
+            (plist-get exim--internal '_XIM_XCONNECT))
+        (exim--log "ClientMessage %s instead of %s (_XIM_XCONNECT) received"
+                   (slot-value obj 'type)
+                   (plist-get exim--internal '_XIM_XCONNECT))
+      ;; Create new X connection
+      (setq data32 (slot-value (slot-value obj 'data) 'data32)
+            client-window (elt data32 0)
+            new-connection (xcb:connect-to-socket)
+            server-window (xcb:generate-id new-connection))
+      (set-process-query-on-exit-flag (slot-value new-connection 'process) nil)
+      ;; Store this client
+      (plist-put exim--internal server-window
+                 (vector new-connection client-window nil))
+      ;; Listen for ClientMessage event on the new connection
+      (xcb:+event new-connection 'xcb:ClientMessage 'exim--on-ClientMessage)
+      ;; Create a communication window
+      (xcb:+request new-connection
+          (make-instance 'xcb:CreateWindow
+                         :depth 0 :wid server-window :parent root
+                         :x 0 :y 0 :width 1 :height 1 :border-width 0
+                         :class xcb:WindowClass:InputOutput :visual 0
+                         :value-mask xcb:CW:OverrideRedirect
+                         :override-redirect 1))
+      (xcb:flush new-connection)
+      ;; Send connection establishment ClientMessage
+      (setf (slot-value obj 'window) client-window
+            (slot-value (slot-value obj 'data) 'data32) (list server-window
+                                                              0 0 0 0))
+      (slot-makeunbound (slot-value obj 'data) 'data8)
+      (slot-makeunbound (slot-value obj 'data) 'data16)
+      (xcb:+request connection
+          (make-instance 'xcb:SendEvent
+                         :propagate 0
+                         :destination client-window
+                         :event-mask xcb:EventMask:NoEvent
+                         :event (xcb:marshal obj connection)))
+      (xcb:flush connection))))
 
 (defun exim--on-ClientMessage (data _synthetic)
   "Handle ClientMessage event on IMS communication window (request)."
@@ -197,27 +200,28 @@ C,no")
           connection (plist-get exim--internal server-window)
           client-window (elt connection 1)
           connection (elt connection 0))
-    (cl-assert (= (slot-value obj 'type)
-                  (plist-get exim--internal '_XIM_PROTOCOL)))
-    (pcase (slot-value obj 'format)
-      (8 ;; Data
-       (exim--on-request (vconcat (slot-value (slot-value obj 'data) 'data8))
-                         connection client-window server-window))
-      (32 ;; Atom
-       (setq data (slot-value (slot-value obj 'data) 'data32)
-             data (slot-value
-                   (xcb:+request-unchecked+reply connection
-                       (make-instance 'xcb:GetProperty
-                                      :delete 1
-                                      :window server-window
-                                      :property (elt data 1)
-                                      :type xcb:GetPropertyType:Any
-                                      :long-offset 0
-                                      :long-length (elt data 0)))
-                   'value))
-       (when (< 0 (length data))        ;can be empty
-         (exim--on-request data connection client-window server-window)))
-      (_ (cl-assert nil)))))
+    (if (/= (slot-value obj 'type) (plist-get exim--internal '_XIM_PROTOCOL))
+        (exim--log "ClientMessage %s instead of %s received"
+                   (slot-value obj 'type)
+                   (plist-get exim--internal '_XIM_PROTOCOL))
+      (pcase (slot-value obj 'format)
+        (8 ;; Data
+         (exim--on-request (vconcat (slot-value (slot-value obj 'data) 'data8))
+                           connection client-window server-window))
+        (32 ;; Atom
+         (setq data (slot-value (slot-value obj 'data) 'data32)
+               data (slot-value
+                     (xcb:+request-unchecked+reply connection
+                         (make-instance 'xcb:GetProperty
+                                        :delete 1
+                                        :window server-window
+                                        :property (elt data 1)
+                                        :type xcb:GetPropertyType:Any
+                                        :long-offset 0
+                                        :long-length (elt data 0)))
+                     'value))
+         (when (< 0 (length data))        ;can be empty
+           (exim--on-request data connection client-window server-window)))))))
 
 (defun exim--on-request (data connection client-window server-window)
   "Handle XIM reuqest."
