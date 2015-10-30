@@ -486,7 +486,9 @@ C,no")
                             (plist-get exim--internal 'connection)
                             detail state)
                      event (when event
-                             (xcb:keysyms:keysym->event event state))))
+                             (xcb:keysyms:keysym->event
+                              (plist-get exim--internal 'connection)
+                              event state))))
              (if (plist-get exim--internal 'event-pending)
                  ;; All events should be forwarded to Emacs frame
                  (when event
