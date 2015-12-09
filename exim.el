@@ -162,10 +162,17 @@ C,no")
             client-window (elt data32 0)
             new-connection (xcb:connect-to-socket)
             server-window (xcb:generate-id new-connection))
+      ;; Add listener for DestroyNotify event on client-window
+      (xcb:+request connection
+          (make-instance 'xcb:ChangeWindowAttributes
+                         :window client-window :value-mask xcb:CW:EventMask
+                         :event-mask xcb:EventMask:StructureNotify))
+      (xcb:flush connection)
       (set-process-query-on-exit-flag (slot-value new-connection 'process) nil)
       ;; Store this client
       (plist-put exim--internal server-window
                  (vector new-connection client-window nil))
+      (plist-put exim--internal client-window server-window)
       ;; Listen for ClientMessage event on the new connection
       (xcb:+event new-connection 'xcb:ClientMessage 'exim--on-ClientMessage)
       ;; Create a communication window
@@ -261,6 +268,7 @@ C,no")
                        connection client-window server-window))
           ((= opcode xim:opcode:disconnect)
            (exim--log "DISCONNECT")
+           (cl-remf exim--internal client-window)
            (cl-remf exim--internal server-window)
            (exim--send (make-instance 'xim:disconnect-reply)
                        connection client-window server-window)
@@ -618,6 +626,24 @@ C,no")
                          :event (xcb:marshal event connection))))
     (xcb:flush connection)))
 
+(defun exim--on-DestroyNotify (data synthetic)
+  "Do cleanups on receiving DestroyNotify event."
+  (unless synthetic
+    (let ((obj (make-instance 'xcb:DestroyNotify))
+          client-window server-window connection)
+      (xcb:unmarshal obj data)
+      (setq client-window (slot-value obj 'window)
+            server-window (plist-get exim--internal client-window))
+      (when server-window
+        (setq connection (aref (plist-get exim--internal server-window) 0))
+        (cl-remf exim--internal client-window)
+        (cl-remf exim--internal server-window)
+        ;; Destroy the communication window
+        (xcb:+request connection
+            (make-instance 'xcb:DestroyWindow :window server-window))
+        ;; Disconnect from the connection
+        (xcb:disconnect connection)))))
+
 (defun exim-start ()
   "Start EXIM."
   (unless (plist-get exim--internal 'connection)
@@ -683,6 +709,8 @@ C,no")
       (xcb:+event connection 'xcb:SelectionRequest #'exim--on-SelectionRequest)
       ;; Listen to ClientMessage event on IMS window for new XIM connection.
       (xcb:+event connection 'xcb:ClientMessage #'exim--on-ClientMessage-0)
+      ;; Listen to DestroyNotify event to do cleanups
+      (xcb:+event connection 'xcb:DestroyNotify #'exim--on-DestroyNotify)
       ;; Create an event window
       (xcb:+request connection
           (make-instance 'xcb:CreateWindow
@@ -711,7 +739,7 @@ C,no")
   "Stop EXIM."
   ;; Destroy IMS communication windows and close connections
   (dolist (i (cl-loop for (key val) on exim--internal by #'cddr
-                      when (integerp key) collect val))
+                      when (and (integerp key) (vectorp val)) collect val))
     (let ((connection (elt i 0))
           (window (elt i 1)))
       (xcb:+request connection
