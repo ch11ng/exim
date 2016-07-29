@@ -493,10 +493,11 @@ C,no")
                (setq event (xcb:keysyms:keycode->keysym
                             (plist-get exim--internal 'connection)
                             detail state)
-                     event (when event
+                     event (when (/= 0 (car event))
                              (xcb:keysyms:keysym->event
                               (plist-get exim--internal 'connection)
-                              event state))))
+                              (car event)
+                              (logand state (lognot (cdr event)))))))
              (if (plist-get exim--internal 'event-pending)
                  ;; All events should be forwarded to Emacs frame
                  (when event
