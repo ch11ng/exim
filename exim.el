@@ -77,6 +77,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'cl-lib))
+
 (require 'xcb-xim)
 (require 'xcb-keysyms)
 
@@ -101,26 +103,34 @@ so,sq,sr,ss,st,sv,sw,szl,ta,tcy,te,tg,th,the,ti,tig,tk,tl,tn,tr,ts,tt,ug,uk,\
 unm,ur,uz,ve,vi,wa,wae,wal,wo,xh,yi,yo,yue,zh,zu,\
 C,no")
 
-(defvar exim--internal
-  '(connection nil root nil window nil im-id 0 ic-id 0 property-index 0
-               LOCALES nil TRANSPORT nil _XIM_XCONNECT nil _XIM_PROTOCOL nil
-               event-pending nil)
-  "Plist stores the internal status of EXIM.")
+(defvar exim--internal '(nil nil))
+(defvar exim--connection nil)
+(defvar exim--root nil)
+(defvar exim--window nil)
+(defvar exim--XIM_SERVERS nil)
+(defvar exim--server nil)
+(defvar exim--LOCALES nil)
+(defvar exim--property-index 0)
+(defvar exim--im-id 0)
+(defvar exim--ic-id 0)
+(defvar exim--TRANSPORT nil)
+(defvar exim--_XIM_XCONNECT nil)
+(defvar exim--_XIM_PROTOCOL nil)
+(defvar exim--event-pending nil)
 
 (defun exim--on-SelectionRequest (data _synthetic)
   "Handle SelectionRequest event on IMS window."
   (let ((obj (make-instance 'xcb:SelectionRequest))
-        (connection (plist-get exim--internal 'connection))
         value)
     (xcb:unmarshal obj data)
     (with-slots (time requestor selection target property) obj
-      (setq value (if (= target (plist-get exim--internal 'LOCALES))
+      (setq value (if (= target exim--LOCALES)
                       exim--locales
-                    (when (= target (plist-get exim--internal 'TRANSPORT))
+                    (when (= target exim--TRANSPORT)
                       "@transport=X/")))
       (when value
         ;; Change the property
-        (xcb:+request connection
+        (xcb:+request exim--connection
             (make-instance 'xcb:ChangeProperty
                            :mode xcb:PropMode:Replace
                            :window requestor
@@ -130,7 +140,7 @@ C,no")
                            :data-len (length value)
                            :data value))
         ;; Send SelectionNotify event
-        (xcb:+request connection
+        (xcb:+request exim--connection
             (make-instance 'xcb:SendEvent
                            :propagate 0
                            :destination requestor
@@ -142,105 +152,106 @@ C,no")
                                                   :selection selection
                                                   :target target
                                                   :property property)
-                                   connection)))
-        (xcb:flush connection)))))
+                                   exim--connection)))
+        (xcb:flush exim--connection)))))
 
 (defun exim--on-ClientMessage-0 (data _synthetic)
   "Handle ClientMessage event on IMS window (new connection)."
   (let ((obj (make-instance 'xcb:ClientMessage))
-        (connection (plist-get exim--internal 'connection))
-        (root (plist-get exim--internal 'root))
-        data32 client-window new-connection server-window)
+        data32 client-win new-connection server-win)
     (xcb:unmarshal obj data)
-    (if (/= (slot-value obj 'type)
-            (plist-get exim--internal '_XIM_XCONNECT))
+    (if (/= (slot-value obj 'type) exim--_XIM_XCONNECT)
         (exim--log "ClientMessage %s instead of %s (_XIM_XCONNECT) received"
-                   (slot-value obj 'type)
-                   (plist-get exim--internal '_XIM_XCONNECT))
+                   (slot-value obj 'type) exim--_XIM_XCONNECT)
       ;; Create new X connection
       (setq data32 (slot-value (slot-value obj 'data) 'data32)
-            client-window (elt data32 0)
+            client-win (elt data32 0)
             new-connection (xcb:connect-to-socket)
-            server-window (xcb:generate-id new-connection))
-      ;; Add listener for DestroyNotify event on client-window
-      (xcb:+request connection
+            server-win (xcb:generate-id new-connection))
+      ;; Add listener for DestroyNotify event on client-win
+      (xcb:+request exim--connection
           (make-instance 'xcb:ChangeWindowAttributes
-                         :window client-window :value-mask xcb:CW:EventMask
+                         :window client-win
+                         :value-mask xcb:CW:EventMask
                          :event-mask xcb:EventMask:StructureNotify))
-      (xcb:flush connection)
+      (xcb:flush exim--connection)
       (set-process-query-on-exit-flag (slot-value new-connection 'process) nil)
       ;; Store this client
-      (plist-put exim--internal server-window
-                 (vector new-connection client-window nil))
-      (plist-put exim--internal client-window server-window)
+      (plist-put exim--internal server-win `[,new-connection ,client-win nil])
+      (plist-put exim--internal client-win server-win)
       ;; Listen for ClientMessage event on the new connection
       (xcb:+event new-connection 'xcb:ClientMessage 'exim--on-ClientMessage)
       ;; Create a communication window
       (xcb:+request new-connection
           (make-instance 'xcb:CreateWindow
-                         :depth 0 :wid server-window :parent root
-                         :x 0 :y 0 :width 1 :height 1 :border-width 0
-                         :class xcb:WindowClass:InputOutput :visual 0
+                         :depth 0
+                         :wid server-win
+                         :parent exim--root
+                         :x 0
+                         :y 0
+                         :width 1
+                         :height 1
+                         :border-width 0
+                         :class xcb:WindowClass:InputOutput
+                         :visual 0
                          :value-mask xcb:CW:OverrideRedirect
                          :override-redirect 1))
       (xcb:flush new-connection)
       ;; Send connection establishment ClientMessage
-      (setf (slot-value obj 'window) client-window
-            (slot-value (slot-value obj 'data) 'data32) (list server-window
-                                                              0 0 0 0))
+      (setf (slot-value obj 'window) client-win
+            (slot-value (slot-value obj 'data) 'data32) `(,server-win 0 0 0 0))
       (slot-makeunbound (slot-value obj 'data) 'data8)
       (slot-makeunbound (slot-value obj 'data) 'data16)
-      (xcb:+request connection
+      (xcb:+request exim--connection
           (make-instance 'xcb:SendEvent
                          :propagate 0
-                         :destination client-window
+                         :destination client-win
                          :event-mask xcb:EventMask:NoEvent
-                         :event (xcb:marshal obj connection)))
-      (xcb:flush connection))))
+                         :event (xcb:marshal obj exim--connection)))
+      (xcb:flush exim--connection))))
 
 (defun exim--on-ClientMessage (data _synthetic)
   "Handle ClientMessage event on IMS communication window (request)."
   (let ((obj (make-instance 'xcb:ClientMessage))
-        server-window client-window connection)
+        server-win client-win connection)
     (xcb:unmarshal obj data)
-    (setq server-window (slot-value obj 'window)
-          connection (plist-get exim--internal server-window)
-          client-window (elt connection 1)
+    (setq server-win (slot-value obj 'window)
+          connection (plist-get exim--internal server-win)
+          client-win (elt connection 1)
           connection (elt connection 0))
-    (if (/= (slot-value obj 'type) (plist-get exim--internal '_XIM_PROTOCOL))
+    (if (/= (slot-value obj 'type) exim--_XIM_PROTOCOL)
         (exim--log "ClientMessage %s instead of %s received"
-                   (slot-value obj 'type)
-                   (plist-get exim--internal '_XIM_PROTOCOL))
+                   (slot-value obj 'type) exim--_XIM_PROTOCOL)
       (pcase (slot-value obj 'format)
         (8 ;; Data
          (exim--on-request (vconcat (slot-value (slot-value obj 'data) 'data8))
-                           connection client-window server-window))
+                           connection client-win server-win))
         (32 ;; Atom
          (setq data (slot-value (slot-value obj 'data) 'data32)
                data (slot-value
                      (xcb:+request-unchecked+reply connection
                          (make-instance 'xcb:GetProperty
                                         :delete 1
-                                        :window server-window
+                                        :window server-win
                                         :property (elt data 1)
                                         :type xcb:GetPropertyType:Any
                                         :long-offset 0
                                         :long-length (elt data 0)))
                      'value))
          (when (< 0 (length data))        ;can be empty
-           (exim--on-request data connection client-window server-window)))))))
+           (exim--on-request data connection client-win server-win)))))))
 
-(defun exim--on-request (data connection client-window server-window)
+(defun exim--on-request (data connection client-win server-win)
   "Handle XIM reuqest."
   (let ((opcode (elt data 0))
-        (xim:lsb (elt (plist-get exim--internal server-window) 2))) ;temp
+        (xim:lsb (elt (plist-get exim--internal server-win) 2)))
     (cond ((= opcode xim:opcode:error)
            (exim--log "ERROR: %s" data))
           ((= opcode xim:opcode:connect)
            (exim--log "CONNECT")
            (setq xim:lsb (= (elt data 4) xim:connect-byte-order:lsb-first))
            ;; Store byte-order
-           (setf (elt (plist-get exim--internal server-window) 2) xim:lsb)
+           (setf (elt (plist-get exim--internal server-win) 2) xim:lsb)
            (let ((obj (make-instance 'xim:connect)))
              (xcb:unmarshal obj data)
              (exim--send (if (and (= 1 (slot-value obj 'major-version))
@@ -254,7 +265,7 @@ C,no")
                                           :error-code
                                           xim:error-code:bad-something
                                           :length 0 :type 0 :detail nil))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ;; No authentication support
           ((or (= opcode xim:opcode:auth-required)
                (= opcode xim:opcode:auth-reply)
@@ -265,23 +276,23 @@ C,no")
                                       :flag xim:error-flag:invalid-both
                                       :error-code xim:error-code:bad-something
                                       :length 0 :type 0 :detail nil)
-                       connection client-window server-window))
+                       connection client-win server-win))
           ((= opcode xim:opcode:disconnect)
            (exim--log "DISCONNECT")
-           (cl-remf exim--internal client-window)
-           (cl-remf exim--internal server-window)
-           (exim--send (make-instance 'xim:disconnect-reply)
-                       connection client-window server-window)
+           (cl-remf exim--internal client-win)
+           (cl-remf exim--internal server-win)
+           (exim--send (make-instance 'xim:disconnect-reply) connection
+                       client-win server-win)
            ;; Destroy the communication window
            (xcb:+request connection
-               (make-instance 'xcb:DestroyWindow :window server-window))
+               (make-instance 'xcb:DestroyWindow
+                              :window server-win))
            ;; Disconnect from the connection
            (xcb:disconnect connection))
           ((= opcode xim:opcode:open)
            (exim--log "OPEN")
            ;; No check is needed; simply make the reply
-           (let ((im-id (plist-get exim--internal 'im-id))
-                 (im-attrs
+           (let ((im-attrs
                   (list
                    (make-instance 'xim:XIMATTR
                                   :id 0
@@ -306,29 +317,29 @@ C,no")
                                   :type xim:ATTRIBUTE-VALUE-TYPE:window
                                   :length (length xlib:XNFocusWindow)
                                   :attribute xlib:XNFocusWindow))))
-             (plist-put exim--internal 'im-id (1+ im-id))
+             (cl-incf exim--im-id)
              (exim--send (make-instance 'xim:open-reply
-                                        :im-id im-id
+                                        :im-id exim--im-id
                                         :im-attrs-length nil ;auto set
                                         :im-attrs im-attrs
                                         :ic-attrs-length nil ;auto set
                                         :ic-attrs ic-attrs)
-                         connection client-window server-window)
+                         connection client-win server-win)
              ;; Static event flow, on-demand-synchronous method
              (exim--send
               (make-instance 'xim:set-event-mask
-                             :im-id im-id
+                             :im-id exim--im-id
                              :ic-id 0   ;all
                              :forward-event-mask xcb:EventMask:KeyPress
                              :synchronous-event-mask xcb:EventMask:NoEvent)
-              connection client-window server-window)))
+              connection client-win server-win)))
           ((= opcode xim:opcode:close)
            (exim--log "CLOSE")
            (let ((obj (make-instance 'xim:close)))
              (xcb:unmarshal obj data)
              (exim--send (make-instance 'xim:close-reply
                                         :im-id (slot-value obj 'im-id))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:trigger-notify)
            (exim--log "TRIGGER-NOTIFY")
            ;; Only static event flow modal is supported
@@ -337,7 +348,7 @@ C,no")
                                       :flag xim:error-flag:invalid-both
                                       :error-code xim:error-code:bad-something
                                       :length 0 :type 0 :detail nil)
-                       connection client-window server-window))
+                       connection client-win server-win))
           ((= opcode xim:opcode:encoding-negotiation)
            (exim--log "ENCODING-NEGOTIATION")
            (let ((obj (make-instance 'xim:encoding-negotiation))
@@ -357,7 +368,7 @@ C,no")
                           :category
                           xim:encoding-negotiation-reply-category:name
                           :index index)
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:query-extension)
            (exim--log "QUERY-EXTENSION")
            (let ((obj (make-instance 'xim:query-extension)))
@@ -366,7 +377,7 @@ C,no")
                                         :im-id (slot-value obj 'im-id)
                                         ;; No extension support
                                         :length 0 :extensions nil)
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:set-im-values)
            (exim--log "SET-IM-VALUES")
            ;; There's only one possible input method attribute; simply reply
@@ -374,7 +385,7 @@ C,no")
              (xcb:unmarshal obj data)
              (exim--send (make-instance 'xim:set-im-values-reply
                                         :im-id (slot-value obj 'im-id))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:get-im-values)
            (exim--log "GET-IM-VALUES")
            (let ((obj (make-instance 'xim:get-im-values))
@@ -410,19 +421,18 @@ C,no")
                                                (lambda (i)
                                                  (elt im-attributes i))
                                                im-attributes-id)))
-              connection client-window server-window)))
+              connection client-win server-win)))
           ((= opcode xim:opcode:create-ic)
            (exim--log "CREATE-IC")
-           (let ((ic-id (plist-get exim--internal 'ic-id))
-                 (obj (make-instance 'xim:create-ic)))
+           (let ((obj (make-instance 'xim:create-ic)))
              ;; FIXME: better be locally incremental
-             (plist-put exim--internal 'ic-id (1+ ic-id))
+             (cl-incf exim--ic-id)
              (xcb:unmarshal obj data)
              ;; ic-attributes slot is simply ignored.
              (exim--send (make-instance 'xim:create-ic-reply
                                         :im-id (slot-value obj 'im-id)
-                                        :ic-id ic-id)
-                         connection client-window server-window)))
+                                        :ic-id exim--ic-id)
+                         connection client-win server-win)))
           ((= opcode xim:opcode:destroy-ic)
            (exim--log "DESTROY-IC")
            (let ((obj (make-instance 'xim:destroy-ic)))
@@ -430,7 +440,7 @@ C,no")
              (exim--send (make-instance 'xim:destroy-ic-reply
                                         :im-id (slot-value obj 'im-id)
                                         :ic-id (slot-value obj 'ic-id))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:set-ic-values)
            (exim--log "SET-IC-VALUES")
            (let ((obj (make-instance 'xim:set-ic-values)))
@@ -439,11 +449,10 @@ C,no")
              (exim--send (make-instance 'xim:set-ic-values-reply
                                         :im-id (slot-value obj 'im-id)
                                         :ic-id (slot-value obj 'ic-id))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:get-ic-values)
            (exim--log "GET-IC-VALUES")
-           (let ((obj (prog1 (make-instance 'xim:get-ic-values)
-                        (xcb:unmarshal obj data)))
+           (let ((obj (make-instance 'xim:get-ic-values))
                  (ic-attributes
                   (list
                    (make-instance 'xim:XICATTRIBUTE
@@ -463,12 +472,13 @@ C,no")
                                   :id 2
                                   :length 4
                                   :value [0 0 0 0])))) ;FIXME: same as above
+             (xcb:unmarshal obj data)
              (exim--send (make-instance 'xim:get-ic-values-reply
                                         :im-id (slot-value obj 'im-id)
                                         :ic-id (slot-value obj 'ic-id)
                                         :length nil
                                         :ic-attributes ic-attributes)
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:set-ic-focus)
            (exim--log "SET-IC-FOCUS")
            ;; All input contexts are the same.
@@ -490,19 +500,20 @@ C,no")
                (setq key-event (make-instance 'xcb:KeyPress)))
              (xcb:unmarshal key-event (slot-value obj 'event))
              (with-slots (detail state) key-event
-               (setq event (xcb:keysyms:keycode->keysym
-                            (plist-get exim--internal 'connection)
-                            detail state)
+               (setq event (xcb:keysyms:keycode->keysym exim--connection detail
+                                                        state)
                      event (when (/= 0 (car event))
-                             (xcb:keysyms:keysym->event
-                              (plist-get exim--internal 'connection)
-                              (car event)
-                              (logand state (lognot (cdr event)))))))
-             (if (plist-get exim--internal 'event-pending)
+                             (xcb:keysyms:keysym->event exim--connection
+                                                        (car event)
+                                                        (logand
+                                                         state
+                                                         (lognot
+                                                          (cdr event)))))))
+             (if exim--event-pending
                  ;; All events should be forwarded to Emacs frame
                  (when event
                    (push event unread-command-events))
-               (plist-put exim--internal 'event-pending t)
+               (setq exim--event-pending t)
                (if (or (not im-func)       ;no active input method
                        (eq im-func #'list) ;the default method
                        (not event)         ;invalid key
@@ -516,7 +527,7 @@ C,no")
                                      :flag xim:commit-flag:synchronous
                                      :serial-number serial-number
                                      :event event)
-                      connection client-window server-window))
+                      connection client-win server-win))
                  (with-temp-buffer      ;in case buffer is read-only
                    (let* ((input-method-use-echo-area t) ;show key strokes
                           (result (encode-coding-string
@@ -534,8 +545,8 @@ C,no")
                                              xim:commit-flag:x-lookup-chars)
                                      :length (length result)
                                      :string result)
-                      connection client-window server-window))))
-               (plist-put exim--internal 'event-pending nil))))
+                      connection client-win server-win))))
+               (setq exim--event-pending nil))))
           ((= opcode xim:opcode:sync)
            (exim--log "SYNC")
            (let ((obj (make-instance 'xim:sync)))
@@ -543,7 +554,7 @@ C,no")
              (exim--send (make-instance 'xim:sync-reply
                                         :im-id (slot-value obj 'im-id)
                                         :ic-id (slot-value obj 'ic-id))
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((= opcode xim:opcode:sync-reply)
            (exim--log "SYNC-REPLY"))
           ((= opcode xim:opcode:reset-ic)
@@ -556,7 +567,7 @@ C,no")
                                         :ic-id (slot-value obj 'ic-id)
                                         :length 0
                                         :string "")
-                         connection client-window server-window)))
+                         connection client-win server-win)))
           ((or (= opcode xim:opcode:str-conversion-reply)
                (= opcode xim:opcode:preedit-start-reply)
                (= opcode xim:opcode:preedit-caret-reply))
@@ -566,7 +577,7 @@ C,no")
                                       :flag xim:error-flag:invalid-both
                                       :error-code xim:error-code:bad-something
                                       :length 0 :type 0 :detail nil)
-                       connection client-window server-window))
+                       connection client-win server-win))
           (t
            (exim--log "[EXIM] Bad protocol")
            (exim--send (make-instance 'xim:error
@@ -574,9 +585,9 @@ C,no")
                                       :flag xim:error-flag:invalid-both
                                       :error-code xim:error-code:bad-protocol
                                       :length 0 :type 0 :detail nil)
-                       connection client-window server-window)))))
+                       connection client-win server-win)))))
 
-(defun exim--send (request connection client-window _server-window)
+(defun exim--send (request connection client-win _server-win)
   "Send an XIM request REQUEST via connection CONNECTION."
   (let ((data (xcb:marshal request))
         event property)
@@ -586,21 +597,23 @@ C,no")
           (setq event
                 (make-instance
                  'xcb:ClientMessage
-                 :format 8 :window client-window
-                 :type (plist-get exim--internal '_XIM_PROTOCOL)
-                 :data (make-instance
-                        'xcb:ClientMessageData
-                        :data8 (append data
-                                       (make-list (- 20 (length data)) 0)))))
+                 :format 8
+                 :window client-win
+                 :type exim--_XIM_PROTOCOL
+                 :data (make-instance 'xcb:ClientMessageData
+                                      :data8
+                                      (append data
+                                              (make-list (- 20 (length data))
+                                                         0)))))
           (xcb:+request connection
               (make-instance 'xcb:SendEvent
-                             :propagate 0 :destination client-window
+                             :propagate 0
+                             :destination client-win
                              :event-mask xcb:EventMask:NoEvent
                              :event (xcb:marshal event connection))))
       ;; Long request
-      (setq property (plist-get exim--internal 'property-index))
-      (plist-put exim--internal 'property-index (1+ property))
-      (setq property (format "_EXIM_%d" property)
+      (setq property (format "_EXIM_%d" exim--property-index)
+            exim--property-index (1+ exim--property-index)
             property (slot-value
                       (xcb:+request-unchecked+reply connection
                           (make-instance 'xcb:InternAtom
@@ -610,19 +623,25 @@ C,no")
                       'atom))
       (xcb:+request connection
           (make-instance 'xcb:ChangeProperty
-                         :mode xcb:PropMode:Append :window client-window
-                         :property property :type xcb:Atom:STRING :format 8
-                         :data-len (length data) :data data))
+                         :mode xcb:PropMode:Append
+                         :window client-win
+                         :property property
+                         :type xcb:Atom:STRING
+                         :format 8
+                         :data-len (length data)
+                         :data data))
       (setq event (make-instance
                    'xcb:ClientMessage
-                   :format 32 :window client-window
-                   :type (plist-get exim--internal '_XIM_PROTOCOL)
+                   :format 32
+                   :window client-win
+                   :type exim--_XIM_PROTOCOL
                    :data (make-instance 'xcb:ClientMessageData
                                         :data32 (list (length data)
                                                       property 0 0 0))))
       (xcb:+request connection
           (make-instance 'xcb:SendEvent
-                         :propagate 0 :destination client-window
+                         :propagate 0
+                         :destination client-win
                          :event-mask xcb:EventMask:NoEvent
                          :event (xcb:marshal event connection))))
     (xcb:flush connection)))
@@ -631,130 +650,167 @@ C,no")
   "Do cleanups on receiving DestroyNotify event."
   (unless synthetic
     (let ((obj (make-instance 'xcb:DestroyNotify))
-          client-window server-window connection)
+          client-win server-win connection)
       (xcb:unmarshal obj data)
-      (setq client-window (slot-value obj 'window)
-            server-window (plist-get exim--internal client-window))
-      (when server-window
-        (setq connection (aref (plist-get exim--internal server-window) 0))
-        (cl-remf exim--internal client-window)
-        (cl-remf exim--internal server-window)
+      (setq client-win (slot-value obj 'window)
+            server-win (plist-get exim--internal client-win))
+      (when server-win
+        (setq connection (aref (plist-get exim--internal server-win) 0))
+        (cl-remf exim--internal client-win)
+        (cl-remf exim--internal server-win)
         ;; Destroy the communication window
         (xcb:+request connection
-            (make-instance 'xcb:DestroyWindow :window server-window))
+            (make-instance 'xcb:DestroyWindow
+                           :window server-win))
         ;; Disconnect from the connection
         (xcb:disconnect connection)))))
 
 (defun exim-start ()
   "Start EXIM."
-  (unless (plist-get exim--internal 'connection)
+  (unless exim--connection
     (add-hook 'kill-emacs-hook #'exim-stop)
-    (let* ((connection (xcb:connect-to-socket))
-           (root (slot-value
-                  (elt (slot-value (xcb:get-setup connection) 'roots) 0)
-                  'root))
-           (window (xcb:generate-id connection))
-           (XIM_SERVERS (slot-value
-                         (xcb:+request-unchecked+reply connection
-                             (make-instance 'xcb:InternAtom
-                                            :only-if-exists 0
-                                            :name-len (length "XIM_SERVERS")
-                                            :name "XIM_SERVERS"))
-                         'atom))
-           (server (slot-value
-                    (xcb:+request-unchecked+reply connection
-                        (make-instance 'xcb:InternAtom
-                                       :only-if-exists 0
-                                       :name-len (length "@server=exim")
-                                       :name "@server=exim"))
-                    'atom))
-           (LOCALES (slot-value
-                     (xcb:+request-unchecked+reply connection
-                         (make-instance 'xcb:InternAtom
-                                        :only-if-exists 0
-                                        :name-len (length "LOCALES")
-                                        :name "LOCALES"))
-                     'atom))
-           (TRANSPORT (slot-value
-                       (xcb:+request-unchecked+reply connection
-                           (make-instance 'xcb:InternAtom
-                                          :only-if-exists 0
-                                          :name-len (length "TRANSPORT")
-                                          :name "TRANSPORT"))
-                       'atom)))
-      (set-process-query-on-exit-flag (slot-value connection 'process) nil)
-      (plist-put exim--internal 'connection connection)
-      (plist-put exim--internal 'root root)
-      (plist-put exim--internal 'window window)
-      (plist-put exim--internal 'LOCALES LOCALES)
-      (plist-put exim--internal 'TRANSPORT TRANSPORT)
-      (plist-put exim--internal '_XIM_XCONNECT
-                 (slot-value
-                  (xcb:+request-unchecked+reply connection
-                      (make-instance 'xcb:InternAtom
-                                     :only-if-exists 0
-                                     :name-len (length "_XIM_XCONNECT")
-                                     :name "_XIM_XCONNECT"))
-                  'atom))
-      (plist-put exim--internal '_XIM_PROTOCOL
-                 (slot-value
-                  (xcb:+request-unchecked+reply connection
-                      (make-instance 'xcb:InternAtom
-                                     :only-if-exists 0
-                                     :name-len (length "_XIM_PROTOCOL")
-                                     :name "_XIM_PROTOCOL"))
-                  'atom))
-      ;; Initialize xcb:keysyms
-      (xcb:keysyms:init connection)
-      ;; Listen to SelectionRequest event for connection establishment
-      (xcb:+event connection 'xcb:SelectionRequest #'exim--on-SelectionRequest)
-      ;; Listen to ClientMessage event on IMS window for new XIM connection.
-      (xcb:+event connection 'xcb:ClientMessage #'exim--on-ClientMessage-0)
-      ;; Listen to DestroyNotify event to do cleanups
-      (xcb:+event connection 'xcb:DestroyNotify #'exim--on-DestroyNotify)
-      ;; Create an event window
-      (xcb:+request connection
-          (make-instance 'xcb:CreateWindow
-                         :depth 0 :wid window :parent root
-                         :x 0 :y 0 :width 1 :height 1 :border-width 0
-                         :class xcb:WindowClass:InputOutput :visual 0
-                         :value-mask xcb:CW:OverrideRedirect
-                         :override-redirect 1))
-      ;; Set the selection owner
-      (xcb:+request connection
-          (make-instance 'xcb:SetSelectionOwner
-                         :owner window :selection server
-                         :time xcb:Time:CurrentTime))
-      ;; Set XIM_SERVERS property on the root window
-      (xcb:+request connection
-          (make-instance 'xcb:ChangeProperty
-                         :mode xcb:PropMode:Prepend :window root
-                         :property XIM_SERVERS :type xcb:Atom:ATOM :format 32
-                         :data-len 1
-                         :data (funcall
-                                (if xcb:lsb #'xcb:-pack-u4-lsb #'xcb:-pack-u4)
-                                server)))
-      (xcb:flush connection))))
+    (let (atom)
+      (setq exim--connection (xcb:connect-to-socket)
+            exim--root (slot-value
+                        (elt (slot-value (xcb:get-setup exim--connection) 'roots)
+                             0)
+                        'root)
+            exim--window (xcb:generate-id exim--connection)
+            atom "XIM_SERVERS"
+            exim--XIM_SERVERS (slot-value
+                               (xcb:+request-unchecked+reply exim--connection
+                                   (make-instance 'xcb:InternAtom
+                                                  :only-if-exists 0
+                                                  :name-len (length atom)
+                                                  :name atom))
+                               'atom)
+            atom "@server=exim"
+            exim--server (slot-value
+                          (xcb:+request-unchecked+reply exim--connection
+                              (make-instance 'xcb:InternAtom
+                                             :only-if-exists 0
+                                             :name-len (length atom)
+                                             :name atom))
+                          'atom)
+            atom "LOCALES"
+            exim--LOCALES (slot-value
+                           (xcb:+request-unchecked+reply exim--connection
+                               (make-instance 'xcb:InternAtom
+                                              :only-if-exists 0
+                                              :name-len (length atom)
+                                              :name atom))
+                           'atom)
+            atom "TRANSPORT"
+            exim--TRANSPORT (slot-value
+                             (xcb:+request-unchecked+reply exim--connection
+                                 (make-instance 'xcb:InternAtom
+                                                :only-if-exists 0
+                                                :name-len (length atom)
+                                                :name atom))
+                             'atom)
+            atom "_XIM_XCONNECT"
+            exim--_XIM_XCONNECT (slot-value
+                                 (xcb:+request-unchecked+reply exim--connection
+                                     (make-instance 'xcb:InternAtom
+                                                    :only-if-exists 0
+                                                    :name-len (length atom)
+                                                    :name atom))
+                                 'atom)
+            atom "_XIM_PROTOCOL"
+            exim--_XIM_PROTOCOL (slot-value
+                                 (xcb:+request-unchecked+reply exim--connection
+                                     (make-instance 'xcb:InternAtom
+                                                    :only-if-exists 0
+                                                    :name-len (length atom)
+                                                    :name atom))
+                                 'atom)))
+    (set-process-query-on-exit-flag (slot-value exim--connection 'process) nil)
+    ;; Initialize xcb:keysyms
+    (xcb:keysyms:init exim--connection)
+    ;; Listen to SelectionRequest event for connection establishment
+    (xcb:+event exim--connection 'xcb:SelectionRequest
+                #'exim--on-SelectionRequest)
+    ;; Listen to ClientMessage event on IMS window for new XIM connection.
+    (xcb:+event exim--connection 'xcb:ClientMessage #'exim--on-ClientMessage-0)
+    ;; Listen to DestroyNotify event to do cleanups
+    (xcb:+event exim--connection 'xcb:DestroyNotify #'exim--on-DestroyNotify)
+    ;; Create an event window
+    (xcb:+request exim--connection
+        (make-instance 'xcb:CreateWindow
+                       :depth 0
+                       :wid exim--window
+                       :parent exim--root
+                       :x 0
+                       :y 0
+                       :width 1
+                       :height 1
+                       :border-width 0
+                       :class xcb:WindowClass:InputOutput
+                       :visual 0
+                       :value-mask xcb:CW:OverrideRedirect
+                       :override-redirect 1))
+    ;; Set the selection owner
+    (xcb:+request exim--connection
+        (make-instance 'xcb:SetSelectionOwner
+                       :owner exim--window
+                       :selection exim--server
+                       :time xcb:Time:CurrentTime))
+    ;; Set XIM_SERVERS property on the root window
+    (xcb:+request exim--connection
+        (make-instance 'xcb:ChangeProperty
+                       :mode xcb:PropMode:Prepend
+                       :window exim--root
+                       :property exim--XIM_SERVERS
+                       :type xcb:Atom:ATOM
+                       :format 32
+                       :data-len 1
+                       :data (funcall (if xcb:lsb
+                                          #'xcb:-pack-u4-lsb
+                                        #'xcb:-pack-u4)
+                                      exim--server)))
+    (xcb:flush exim--connection)))
 
 (defun exim-stop ()
   "Stop EXIM."
-  ;; Destroy IMS communication windows and close connections
+  ;; Close IMS communication connections.
   (dolist (i (cl-loop for (key val) on exim--internal by #'cddr
                       when (and (integerp key) (vectorp val)) collect val))
-    (let ((connection (elt i 0))
-          (window (elt i 1)))
-      (xcb:+request connection
-          (make-instance 'xcb:DestroyWindow :window window))
-      (xcb:flush connection)
-      (xcb:disconnect connection)))
-  ;; Destroy the IMS window and close the connection
-  (let ((connection (plist-get exim--internal 'connection)))
-    (when connection
-      (xcb:+request connection
-          (make-instance 'xcb:DestroyWindow
-                         :window (plist-get exim--internal 'window)))
-      (xcb:flush connection)
-      (xcb:disconnect connection))))
+    (xcb:disconnect (elt i 0)))
+  ;; Close the IMS connection.
+  (when exim--connection
+    ;; Remove EXIM from XIM_SERVERS.
+    (let ((reply (xcb:+request-unchecked+reply exim--connection
+                     (make-instance 'xcb:GetProperty
+                                    :delete 1
+                                    :window exim--root
+                                    :property exim--XIM_SERVERS
+                                    :type xcb:Atom:ATOM
+                                    :long-offset 0
+                                    :long-length 1000)))
+          unpack pack tmp)
+      (when (and reply
+                 (< 4 (length (setq reply (slot-value reply 'value)))))
+        (setq unpack (if xcb:lsb #'xcb:-unpack-u4-lsb #'xcb:-unpack-u4)
+              pack (if xcb:lsb #'xcb:-pack-u4-lsb #'xcb:-pack-u4)
+              reply (vconcat reply))
+        (dotimes (i (/ (length reply) 4))
+          (push (funcall unpack reply (* i 4)) tmp))
+        (setq tmp (delq exim--server tmp)
+              reply nil)
+        (dolist (i tmp)
+          (push (funcall pack i) reply))
+        (xcb:+request exim--connection
+            (make-instance 'xcb:ChangeProperty
+                           :mode xcb:PropMode:Replace
+                           :window exim--root
+                           :property exim--XIM_SERVERS
+                           :type xcb:Atom:ATOM
+                           :format 32
+                           :data-len (length reply)
+                           :data reply))
+        (xcb:flush exim--connection)))
+    (xcb:disconnect exim--connection)
+    (setq exim--connection nil)))
 
 
 
